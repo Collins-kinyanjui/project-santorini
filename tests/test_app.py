@@ -307,3 +307,36 @@ def test_admin_partial_stk_amount_and_balance(monkeypatch):
     assert st["payment_status"]=="verified"
     assert st["status"]=="confirmed"
     assert requests==[500,1000]
+
+def test_sandbox_bridge_does_not_settle_real_booking(monkeypatch):
+    import sandbox_bridge
+    start,end=future(310),future(311)
+    r=client.post("/api/bookings",json={"category":"single","guest_name":"Sandbox Bridge",
+        "email":"bridge@example.com","phone":"0712345678","checkin":start,
+        "checkout":end,"guests":1,"payment_method":"mpesa","requests":""})
+    assert r.status_code==201,r.text
+    booking=r.json()
+    client.post("/api/admin/login",json={"password":"test-only-staff-password"})
+    monkeypatch.setenv("SANDBOX_BRIDGE_URL","https://sandbox.example.com")
+    monkeypatch.setenv("SANDBOX_BRIDGE_SECRET","test-bridge-secret")
+    monkeypatch.setattr(sandbox_bridge,"gateway_call",lambda path,payload:{
+        "attempt_id":"a"*32,"status":"prompt_sent"})
+    config=client.get("/api/admin/stk/sandbox/config")
+    assert config.status_code==200 and config.json()["enabled"]
+    b={"booking_id":booking["booking_id"],"phone":"0712345678",
+       "amount":10,"customer_consented":True}
+    assert client.post("/api/admin/stk/sandbox/request",json={**b,"customer_consented":False}).status_code==422
+    assert client.post("/api/admin/stk/sandbox/request",json={**b,"amount":1501}).status_code==422
+    r=client.post("/api/admin/stk/sandbox/request",json=b)
+    assert r.status_code==200,r.text
+    assert r.json()["attempt_id"]=="a"*32
+    monkeypatch.setattr(sandbox_bridge,"gateway_call",lambda path,payload:{
+        "stk_status":"verified","result_code":0,"verified_test_amount":10,
+        "sandbox":True,"message":"Sandbox result only"})
+    result=client.post("/api/admin/stk/sandbox/status",json={"attempt_id":"a"*32})
+    assert result.status_code==200 and result.json()["verified_test_amount"]==10
+    actual=client.post("/api/bookings/status",json={
+        "booking_id":booking["booking_id"],"cancel_code":booking["cancel_code"]})
+    assert actual.status_code==200
+    assert actual.json()["payment_status"]!="verified"
+    assert actual.json()["status"]!="confirmed"
