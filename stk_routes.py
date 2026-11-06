@@ -62,6 +62,7 @@ class StaffPush(BaseModel):
     booking_id: str
     phone: str
     customer_consented: bool
+    amount: int
 
 class GuestStatus(BaseModel):
     booking_id: str
@@ -80,11 +81,18 @@ def booking_for_push(booking_id):
         raise HTTPException(409,"This reservation is no longer eligible for an STK payment.")
     return book
 
-def start(booking_id, phone):
+def start(booking_id, phone, requested_amount=None):
     need_active()
     try: phone=stk.normalize_phone(phone)
     except ValueError as exc: raise HTTPException(422,str(exc))
     book=booking_for_push(booking_id)
+    with conn() as db:
+        previous_paid=sql(db,"SELECT COALESCE(SUM(amount),0) AS paid FROM stk_attempts WHERE booking_id=? AND status='verified'",(booking_id,),read=True)[0]["paid"]
+    remaining=int(book["total"])-int(previous_paid)
+    if remaining<=0:raise HTTPException(409,"Booking paid in full.")
+    if requested_amount is None:requested_amount=remaining
+    if not isinstance(requested_amount,int) or isinstance(requested_amount,bool) or not 1<=requested_amount<=remaining:
+        raise HTTPException(422,f"Amount must be between KES 1 and the outstanding balance of KES {remaining}.")
     now=datetime.now(timezone.utc)
     with conn() as db:
         # Use an application-wide advisory lock for concurrent STK requests in production.
@@ -100,9 +108,9 @@ def start(booking_id, phone):
                 raise HTTPException(409,"A previous payment request is still unresolved. Refresh its status before retrying.")
         attempt_id=secrets.token_hex(16)
         sql(db,"INSERT INTO stk_attempts(id,booking_id,phone,amount,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?)",
-            (attempt_id,booking_id,phone,int(book["total"]),"initiating",moment(),moment()))
+            (attempt_id,booking_id,phone,requested_amount,"initiating",moment(),moment()))
     try:
-        data=stk.send_push(phone,int(book["total"]),booking_id,public_callback())
+        data=stk.send_push(phone,requested_amount,booking_id,public_callback())
     except (stk.DarajaError,HTTPException) as exc:
         # A timeout can be ambiguous; never silently claim that the customer has not paid.
         with conn() as db:
@@ -112,7 +120,7 @@ def start(booking_id, phone):
     with conn() as db:
         sql(db,"UPDATE stk_attempts SET checkout_id=?,merchant_id=?,status='sent',updated_at=? WHERE id=?",
             (data["checkout_id"],data["merchant_request_id"],moment(),attempt_id))
-    return {"request_id":attempt_id,"booking_id":booking_id,
+    return {"request_id":attempt_id,"booking_id":booking_id,"amount":requested_amount,"remaining_after_success":remaining-requested_amount,
             "status":"prompt_sent","message":"STK prompt requested. A phone PIN approval is not proof of payment; await Safaricom confirmation."}
 
 def read_attempt(booking_id):
@@ -170,7 +178,7 @@ def staff_start(b:StaffPush,request:Request):
     admin(request);origin(request)
     if not b.customer_consented:
         raise HTTPException(422,"Confirm the customer has agreed to receive this payment request.")
-    return start(b.booking_id,b.phone)
+    return start(b.booking_id,b.phone,b.amount)
 
 @router.post("/api/bookings/stk/status")
 def guest_payment_status(b:GuestStatus,request:Request):
