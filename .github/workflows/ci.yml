@@ -10,6 +10,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install -r requirements.txt pytest httpx
-      - run: python -m compileall -q app.py
-      - run: python -m pytest -q
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Python and browser dependencies
+        run: |
+          pip install -r requirements.txt pytest httpx playwright
+          python -m playwright install --with-deps chromium
+      - name: Syntax checks for all frontend scripts and backend
+        run: |
+          node --check booking.js
+          node --check site.js
+          node --check admin.js
+          python -m compileall -q app.py
+      - name: API and real browser tests
+        run: python -m pytest -q
