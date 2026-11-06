@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from typing import Literal
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, Response, FileResponse
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from pydantic import BaseModel, EmailStr, Field
 
@@ -111,6 +111,10 @@ def home():return (ROOT/"index.html").read_text(encoding="utf8")
 def booking_page():return (ROOT/"booking.html").read_text(encoding="utf8")
 @app.get("/admin",response_class=HTMLResponse)
 def admin_page():return (ROOT/"admin.html").read_text(encoding="utf8")
+@app.get("/{filename}")
+def assets(filename:str):
+    if filename not in {"styles.css","site.js","booking.css","booking.js","admin.js"}:raise HTTPException(404,"Not found")
+    return FileResponse(ROOT/filename)
 @app.get("/api/health")
 def health():return {"ok":True,"rooms":20,"manual_mpesa":True}
 @app.get("/api/mpesa/instructions")
