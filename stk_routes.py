@@ -38,7 +38,8 @@ def initialize():
 initialize()
 
 def active():
-    return os.getenv("DARAJA_ENABLED", "").lower() == "true" and stk.configured()
+    return (os.getenv("DARAJA_ENABLED", "").lower() == "true" and stk.configured()
+            and (os.getenv("APP_ENV") != "production" or os.getenv("DARAJA_ENV") == "production"))
 
 def callback_secret():
     return hmac.new(SECRET.encode(), b"santorini-daraja-stk-callback", hashlib.sha256).hexdigest()
