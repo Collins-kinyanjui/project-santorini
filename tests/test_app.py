@@ -288,7 +288,7 @@ def test_admin_partial_stk_amount_and_balance(monkeypatch):
             "Body":{"stkCallback":{"CheckoutRequestID":checkout,"ResultCode":0,
             "CallbackMetadata":{"Item":[{"Name":"Amount","Value":amount},
             {"Name":"MpesaReceiptNumber","Value":receipt},
-            {"Name":"PhoneNumber","Value":254712345678}]}}})
+            {"Name":"PhoneNumber","Value":254712345678}]}}}})
     assert callback("TEST-PARTIAL-1",500,"PARTIALA123").status_code==200
     st=client.post("/api/bookings/status",json={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"]}).json()
     assert st["payment_status"]=="partial"
