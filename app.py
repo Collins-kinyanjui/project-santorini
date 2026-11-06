@@ -308,3 +308,7 @@ def report(request:Request):
     buf=io.StringIO();writer=csv.writer(buf);writer.writerow(keys)
     for rec in records:writer.writerow([("'"+str(rec[k])) if str(rec[k]).startswith(("=","+","-","@")) else rec[k] for k in keys])
     return Response(buf.getvalue(),media_type="text/csv",headers={"Content-Disposition":'attachment; filename="santorini-bookings.csv"'})
+
+# Optional STK integration; remains disabled without explicit credentials.
+from stk_routes import router as stk_router
+app.include_router(stk_router)
