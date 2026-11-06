@@ -58,8 +58,8 @@ def test_real_browser_guest_booking_and_admin():
             # Changing the payment method must visibly reveal manual payment instructions.
             page.locator("#payment_method").select_option("mpesa")
             page.locator("#modal").wait_for(state="visible", timeout=5000)
-            assert "Collins Kinyanjui Thuo" in page.locator("#modal").inner_text()
-            assert "0740 686 453" in page.locator("#modal").inner_text()
+            assert "Alex Waragu Kuriah" in page.locator("#modal").inner_text()
+            assert "3340030" in page.locator("#modal").inner_text()
             page.locator("#close").click()
             page.locator("#book button").click()
             page.locator("#receipt").wait_for(state="visible", timeout=10000)
