@@ -4,7 +4,7 @@ An independent two-page hotel website with 20 rooms, admin management, and manua
 ## Guest experience
 - Landing page: elegant cream, blue and warm gold glass UI with moving hero, animated gallery, room previews and amenities.
 - Booking page: availability, date/room selection, reserve and pay on arrival or manually by M-Pesa.
-- Manual M-Pesa recipient: Collins Kinyanjui Thuo; +254 740 686 453. Submitting a transaction reference does **not** confirm payment.
+- Manual M-Pesa Buy Goods Till: 3340030; registered recipient: Alex Waragu Kuriah (different from the New Santorini Suites trading name). Submitting a transaction reference does **not** confirm payment.
 - 12 single rooms (KES 1,500/night), 5 doubles (KES 2,000/night) and 3 deluxe suites (KES 2,500/night).
 
 ## Render deployment
