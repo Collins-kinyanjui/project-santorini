@@ -150,9 +150,14 @@ def reconcile(attempt):
                 other_stk=sql(db,"SELECT id FROM stk_attempts WHERE callback_receipt=? AND id<>? AND status='verified'",(item["callback_receipt"],item["id"]),read=True)
                 if not receipt_used and not other_stk:
                     sql(db,"UPDATE stk_attempts SET status='verified',updated_at=? WHERE id=?",(moment(),item["id"]))
-                    if booking[0]["pay_status"]!="verified":
+                    # Only the full verified sum can settle the booking.
+                    total=sql(db,"SELECT total FROM bookings WHERE id=?",(item["booking_id"],),read=True)[0]["total"]
+                    paid=sql(db,"SELECT COALESCE(SUM(amount),0) AS paid FROM stk_attempts WHERE booking_id=? AND status='verified'",(item["booking_id"],),read=True)[0]["paid"]
+                    if paid>=total:
                         sql(db,"UPDATE bookings SET pay_method='mpesa',pay_status='verified',status='confirmed',transaction_code=? WHERE id=?",
                             (item["callback_receipt"],item["booking_id"]))
+                    else:
+                        sql(db,"UPDATE bookings SET pay_method='mpesa',pay_status='partial' WHERE id=?",(item["booking_id"],))
                 else:sql(db,"UPDATE stk_attempts SET status='mismatch',updated_at=? WHERE id=?",(moment(),item["id"]))
         else:
             sql(db,"UPDATE stk_attempts SET status='callback_success',updated_at=? WHERE id=?",(moment(),item["id"]))
