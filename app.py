@@ -147,6 +147,43 @@ def reserve(b:Booking,request:Request):
         total=int(selected["price"])*days
         sql(c,"""INSERT INTO bookings(id,secret,room_id,guest_name,email,phone,checkin,checkout,guests,requests,pay_method,total,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",(bid,private,selected["id"],b.guest_name.strip(),str(b.email),b.phone.strip(),b.checkin,b.checkout,b.guests,b.requests.strip(),b.payment_method,total,moment()))
     return {"booking_id":bid,"cancel_code":private,"status":"pending","payment_status":"unpaid","payment_method":b.payment_method,"total":total,"currency":"KES","nights":days,"note":"Pending property approval. This is a booking acknowledgment, not a tax receipt."}
+
+class BookingIdentity(BaseModel):
+    booking_id:str
+    cancel_code:str
+
+def guest_booking(b:BookingIdentity):
+    with conn() as db:
+        rows=sql(db,"SELECT id,secret,room_id,guest_name,checkin,checkout,guests,pay_method,pay_status,status,total FROM bookings WHERE id=?",(b.booking_id,),read=True)
+    if not rows or not secrets.compare_digest(rows[0]["secret"],b.cancel_code):
+        raise HTTPException(404,"Booking reference or private code not found")
+    return rows[0]
+
+def acknowledgement_allowed(record):
+    return record["status"] not in ("rejected","cancelled") and record["pay_status"]!="rejected"
+
+@app.post("/api/bookings/status")
+def booking_status(b:BookingIdentity,request:Request):
+    origin(request)
+    record=guest_booking(b)
+    return {"booking_id":record["id"],"status":record["status"],"payment_status":record["pay_status"],"print_allowed":acknowledgement_allowed(record)}
+
+@app.post("/api/bookings/acknowledgment",response_class=HTMLResponse)
+def booking_acknowledgment(b:BookingIdentity,request:Request):
+    origin(request)
+    record=guest_booking(b)
+    if not acknowledgement_allowed(record):
+        raise HTTPException(403,"This reservation was cancelled or rejected. Acknowledgment printing is disabled.")
+    from html import escape
+    details=[("Booking reference",record["id"]),("Guest",record["guest_name"]),
+        ("Room number",record["room_id"]),("Check-in",record["checkin"]),
+        ("Check-out",record["checkout"]),("Guests",record["guests"]),
+        ("Amount",f"KES {record['total']:,}"),("Payment method",record["pay_method"]),
+        ("Booking status",record["status"]),("Payment status",record["pay_status"])]
+    rows="".join("<tr><th>"+escape(str(k))+"</th><td>"+escape(str(v))+"</td></tr>" for k,v in details)
+    html="<html><head><meta charset='utf-8'><title>Booking acknowledgment</title><style>body{font:16px Arial,sans-serif;max-width:720px;margin:50px auto;padding:20px;color:#172d42}h1{font:36px Georgia,serif}table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:12px;border-bottom:1px solid #ddd}p{line-height:1.7}.note{border:1px solid #bbb;padding:15px;margin:22px 0}@media print{body{margin:0;max-width:none}}</style></head><body><h1>New Santorini Suites</h1><p>Opposite Olake Petrol Station, Busia–Kisumu Highway</p><div class='note'><strong>BOOKING ACKNOWLEDGMENT — NOT A PAYMENT RECEIPT</strong><p>Subject to staff confirmation. This document does not confirm that payment was received.</p></div><table>"+rows+"</table><p>Contact: +254 740 686 453</p></body></html>"
+    return HTMLResponse(html,headers={"Cache-Control":"no-store","X-Content-Type-Options":"nosniff"})
+
 @app.post("/api/bookings/mpesa/submit")
 def mpesa_submit(b:Code,request:Request):
     origin(request)
@@ -154,7 +191,7 @@ def mpesa_submit(b:Code,request:Request):
         row=sql(c,"SELECT secret,pay_method,status,pay_status,transaction_code FROM bookings WHERE id=?",(b.booking_id,),read=True)
         if not row or not secrets.compare_digest(row[0]["secret"],b.cancel_code):raise HTTPException(404,"Invalid booking credentials")
         r=row[0]
-        if r["pay_method"]!="mpesa" or r["status"] in ("cancelled","rejected") or r["pay_status"]=="verified":
+        if r["pay_method"]!="mpesa" or r["status"] in ("cancelled","rejected") or r["pay_status"] in ("verified","rejected"):
             raise HTTPException(409,"This booking cannot accept a transaction code")
         if r["transaction_code"] and r["transaction_code"]!=b.transaction_code.upper():raise HTTPException(409,"Code already submitted; contact reception")
         sql(c,"UPDATE bookings SET transaction_code=?,pay_status='submitted' WHERE id=?",(b.transaction_code.upper(),b.booking_id))
@@ -239,7 +276,7 @@ def verify(bid:str,b:Verify,request:Request):
         r=rows[0]
         if r["pay_method"]!="mpesa" or r["pay_status"]!="submitted" or not r["transaction_code"] or r["status"] in ("cancelled","rejected"):
             raise HTTPException(409,"No valid submitted payment to review")
-        sql(c,"UPDATE bookings SET pay_status=? WHERE id=?",(b.payment_status,bid))
+        sql(c,"UPDATE bookings SET pay_status=?,status=CASE WHEN ?='rejected' THEN 'rejected' ELSE status END WHERE id=?",(b.payment_status,b.payment_status,bid))
     return {"payment_status":b.payment_status,"warning":"Verify actual M-Pesa receipt independently"}
 @app.patch("/api/admin/rooms/{rid}/price")
 def price(rid:int,b:Price,request:Request):
