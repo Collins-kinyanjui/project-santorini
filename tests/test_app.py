@@ -39,3 +39,39 @@ def test_booking_mpesa_and_admin():
 def test_no_automatic_card_charges():
     body={"category":"single","guest_name":"Test Guest","email":"guest@example.com","phone":"0712345678","checkin":future(20),"checkout":future(21),"guests":1,"requests":"","payment_method":"card"}
     assert client.post("/api/bookings",json=body).status_code==422
+
+def test_date_aware_dashboard_and_cancelled_room_release():
+    start, end = future(90), future(91)
+    login=client.post("/api/admin/login",json={"password":"test-only-staff-password"})
+    assert login.status_code==200
+    initial=client.get(f"/api/admin/dashboard?on_date={start}").json()["stats"]
+    bookings=[]
+    for i in range(3):
+        reservation=client.post("/api/bookings",json={
+            "category":"single","guest_name":f"Dashboard Example {i}",
+            "email":f"dashboard{i}@example.com","phone":"0712345678",
+            "checkin":start,"checkout":end,"guests":1,"requests":"",
+            "payment_method":"arrival"
+        })
+        assert reservation.status_code==201,reservation.text
+        bookings.append(reservation.json())
+    for b in bookings[:2]:
+        assert client.patch(f"/api/admin/bookings/{b['booking_id']}",json={"status":"confirmed"}).status_code==200
+    last=bookings[2]
+    assert client.post("/api/bookings/cancel",json={"booking_id":last["booking_id"],"cancel_code":last["cancel_code"]}).status_code==200
+    stats=client.get(f"/api/admin/dashboard?on_date={start}").json()["stats"]
+    assert stats["confirmed"]==initial["confirmed"]+2
+    assert stats["cancelled"]==initial["cancelled"]+1
+    assert stats["pending"]==initial["pending"]
+    assert stats["reserved_on_date"]==initial["reserved_on_date"]+2
+    assert stats["available_rooms"]==initial["available_rooms"]-2
+    assert stats["occupied_on_date"]==initial["occupied_on_date"]+2
+    assert stats["total_rooms"]==20
+    response=client.get(f"/api/availability?checkin={start}&checkout={end}")
+    assert response.status_code==200
+    singles=next(r for r in response.json()["categories"] if r["category"]=="single")
+    assert singles["available"]==10
+    today=client.get("/api/admin/dashboard").json()["stats"]
+    assert today["on_date"]==today["today"]
+    assert today["confirmed"]>=stats["confirmed"]
+    assert client.get("/api/admin/dashboard?on_date=not-a-date").status_code==422
