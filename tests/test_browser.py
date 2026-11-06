@@ -82,6 +82,28 @@ def test_real_browser_guest_booking_and_admin():
             assert reference in page.locator("#bookings").inner_text()
             assert "TXBROWSER123" in page.locator("#bookings").inner_text()
             assert not errors, errors
+
+            # Homepage dates must automatically trigger availability on the booking page.
+            start=(date.today()+timedelta(days=15)).isoformat()
+            end=(date.today()+timedelta(days=16)).isoformat()
+            page.goto(BASE + "/booking?checkin="+start+"&checkout="+end+"&category=single")
+            page.locator("#availabilityStatus").get_by_text("Single Room", exact=False).wait_for(timeout=10000)
+            # Pay on arrival should produce a visible booking reference and be visible to staff.
+            page.locator("#guest_name").fill("Arrival Test Guest")
+            page.locator("#email").fill("arrival-guest@example.com")
+            page.locator("#phone").fill("0712000000")
+            page.locator("#guests").fill("1")
+            page.locator("#payment_method").select_option("arrival")
+            page.locator("#book button").click()
+            page.locator("#receipt").wait_for(state="visible", timeout=10000)
+            text=page.locator("#receiptText").inner_text()
+            assert "Private code (keep safe)" in text
+            arrival_ref=re.search(r"NS-[0-9A-F]{8}", text).group(0)
+            assert "pending staff approval" in text
+            page.goto(BASE + "/admin")
+            page.locator("#dashboard").wait_for(state="visible", timeout=10000)
+            assert arrival_ref in page.locator("#bookings").inner_text()
+            assert not errors, errors
             browser.close()
     finally:
         proc.terminate()
