@@ -184,14 +184,43 @@ def login(b:Login,request:Request):
 def logout(request:Request):
     resp=JSONResponse({"ok":True});resp.delete_cookie("santorini_admin");return resp
 @app.get("/api/admin/dashboard")
-def dashboard(request:Request):
+def dashboard(request:Request, on_date:str|None=None):
     admin(request)
+    # Property calendar follows Kenya local dates, not the server's UTC timezone.
+    from zoneinfo import ZoneInfo
+    today=datetime.now(ZoneInfo("Africa/Nairobi")).date()
+    if on_date:
+        try: selected=date.fromisoformat(on_date)
+        except ValueError: raise HTTPException(422,"Invalid calendar date")
+    else: selected=today
+    target=selected.isoformat()
     with conn() as c:
         reservations=sql(c,"""SELECT b.id,b.room_id,r.category,b.guest_name,b.email,b.phone,b.checkin,b.checkout,b.guests,b.requests,b.pay_method AS payment_method,b.pay_status AS payment_status,b.transaction_code AS mpesa_code,b.status,b.total,b.created_at FROM bookings b JOIN rooms r ON b.room_id=r.id ORDER BY b.created_at DESC LIMIT 500""",read=True)
         inquiries=sql(c,"SELECT * FROM inquiries ORDER BY created_at DESC LIMIT 100",read=True)
         rooms=sql(c,"SELECT id,category,price,active FROM rooms ORDER BY id",read=True)
-    now=date.today().isoformat()
-    return {"bookings":reservations,"inquiries":inquiries,"rooms":rooms,"stats":{"total_rooms":len(rooms),"pending":sum(x["status"]=="pending" for x in reservations),"confirmed":sum(x["status"]=="confirmed" for x in reservations),"occupied_now":len({x["room_id"] for x in reservations if x["status"]=="confirmed" and x["checkin"]<=now<x["checkout"]}),"active_rooms":sum(x["active"] for x in rooms),"inquiries":len(inquiries)}}
+        counts=sql(c,"SELECT status,COUNT(*) AS qty FROM bookings GROUP BY status",read=True)
+        blocked=sql(c,"""SELECT DISTINCT room_id,status FROM bookings WHERE checkin<=? AND checkout>? AND status IN ('pending','confirmed')""",(target,target),read=True)
+    statuses={row["status"]:row["qty"] for row in counts}
+    active={r["id"] for r in rooms if r["active"]}
+    reserved={row["room_id"] for row in blocked}
+    confirmed_rooms={row["room_id"] for row in blocked if row["status"]=="confirmed"}
+    stats={
+        "total_rooms":len(rooms),
+        "enabled_rooms":len(active),
+        "active_rooms":len(active),
+        "available_rooms":len(active-reserved),
+        "reserved_on_date":len(active & reserved),
+        "occupied_on_date":len(active & confirmed_rooms),
+        "occupied_now":len(active & confirmed_rooms) if selected==today else None,
+        "pending":statuses.get("pending",0),
+        "confirmed":statuses.get("confirmed",0),
+        "cancelled":statuses.get("cancelled",0),
+        "rejected":statuses.get("rejected",0),
+        "inquiries":len(inquiries),
+        "on_date":target,
+        "today":today.isoformat()
+    }
+    return {"bookings":reservations,"inquiries":inquiries,"rooms":rooms,"stats":stats}
 @app.patch("/api/admin/bookings/{bid}")
 def booking_action(bid:str,b:Action,request:Request):
     admin(request);origin(request)
