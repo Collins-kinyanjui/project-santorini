@@ -313,3 +313,6 @@ def report(request:Request):
 # Optional STK integration; remains disabled without explicit credentials.
 from stk_routes import router as stk_router
 app.include_router(stk_router)
+
+from sandbox_bridge import router as sandbox_bridge_router
+app.include_router(sandbox_bridge_router)
