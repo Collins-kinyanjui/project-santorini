@@ -75,3 +75,72 @@ def test_date_aware_dashboard_and_cancelled_room_release():
     assert today["on_date"]==today["today"]
     assert today["confirmed"]>=stats["confirmed"]
     assert client.get("/api/admin/dashboard?on_date=not-a-date").status_code==422
+
+def test_inventory_and_print_revocation_on_rejected_payment():
+    checkin,checkout=future(130),future(131)
+    client.post("/api/admin/login",json={"password":"test-only-staff-password"})
+    response=client.post("/api/bookings",json={
+        "category":"deluxe","guest_name":"Print Revocation Test",
+        "email":"revocation@example.com","phone":"0712345678",
+        "checkin":checkin,"checkout":checkout,"guests":2,
+        "requests":"","payment_method":"mpesa"
+    })
+    assert response.status_code==201,response.text
+    b=response.json()
+    creds={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"]}
+    dashboard=client.get(f"/api/admin/dashboard?on_date={checkin}").json()
+    booked_room=next(x for x in dashboard["room_calendar"] if x["booking_reference"]==b["booking_id"])
+    assert booked_room["availability"]=="reserved_pending"
+    assert client.post("/api/bookings/status",json=creds).json()["print_allowed"] is True
+    assert client.post("/api/bookings/acknowledgment",json=creds).status_code==200
+    submit=client.post("/api/bookings/mpesa/submit",json={**creds,"transaction_code":"REJECT123ABC"})
+    assert submit.status_code==200
+    rejected=client.patch(f"/api/admin/bookings/{b['booking_id']}/payment",json={"payment_status":"rejected"})
+    assert rejected.status_code==200,rejected.text
+    state=client.post("/api/bookings/status",json=creds).json()
+    assert state["payment_status"]=="rejected"
+    assert state["status"]=="rejected"
+    assert state["print_allowed"] is False
+    assert client.post("/api/bookings/acknowledgment",json=creds).status_code==403
+    assert client.post("/api/bookings/mpesa/submit",json={**creds,"transaction_code":"REJECT123ABC"}).status_code==409
+    after=client.get(f"/api/admin/dashboard?on_date={checkin}").json()
+    freed=next(x for x in after["room_calendar"] if x["room_id"]==booked_room["room_id"])
+    assert freed["availability"]=="unbooked"
+    assert freed["booking_reference"] is None
+    available=client.get(f"/api/availability?checkin={checkin}&checkout={checkout}").json()
+    assert next(x for x in available["categories"] if x["category"]=="deluxe")["available"]==3
+
+
+def test_confirmed_payment_marks_room_booked_and_blocks_double_booking():
+    checkin,checkout=future(140),future(141)
+    client.post("/api/admin/login",json={"password":"test-only-staff-password"})
+    def make():
+        return client.post("/api/bookings",json={
+            "category":"deluxe","guest_name":"Inventory Example","email":"inventory@example.com",
+            "phone":"0712345678","checkin":checkin,"checkout":checkout,"guests":2,
+            "requests":"","payment_method":"mpesa"
+        })
+    reservations=[]
+    for i in range(3):
+        response=make()
+        assert response.status_code==201,response.text
+        reservations.append(response.json())
+    full=make()
+    assert full.status_code==409
+    ref=reservations[0]
+    submit=client.post("/api/bookings/mpesa/submit",json={
+        "booking_id":ref["booking_id"],"cancel_code":ref["cancel_code"],"transaction_code":"VERIFIED123ABC"
+    })
+    assert submit.status_code==200
+    verified=client.patch(f"/api/admin/bookings/{ref['booking_id']}/payment",json={"payment_status":"verified"})
+    assert verified.status_code==200,verified.text
+    status=client.post("/api/bookings/status",json={"booking_id":ref["booking_id"],"cancel_code":ref["cancel_code"]}).json()
+    assert status["status"]=="confirmed"
+    assert status["payment_status"]=="verified"
+    calendar=client.get(f"/api/admin/dashboard?on_date={checkin}").json()["room_calendar"]
+    assert len([x for x in calendar if x["category"]=="deluxe" and x["availability"]=="booked"])==1
+    assert len([x for x in calendar if x["category"]=="deluxe" and x["availability"]=="reserved_pending"])==2
+    # Cancel only a still-pending reservation and verify room inventory returns.
+    b=reservations[1]
+    assert client.post("/api/bookings/cancel",json={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"]}).status_code==200
+    assert make().status_code==201
