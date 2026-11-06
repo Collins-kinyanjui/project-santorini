@@ -235,6 +235,7 @@ def dashboard(request:Request, on_date:str|None=None):
         reservations=sql(c,"""SELECT b.id,b.room_id,r.category,b.guest_name,b.email,b.phone,b.checkin,b.checkout,b.guests,b.requests,b.pay_method AS payment_method,b.pay_status AS payment_status,b.transaction_code AS mpesa_code,b.status,b.total,b.created_at FROM bookings b JOIN rooms r ON b.room_id=r.id ORDER BY b.created_at DESC LIMIT 500""",read=True)
         inquiries=sql(c,"SELECT * FROM inquiries ORDER BY created_at DESC LIMIT 100",read=True)
         rooms=sql(c,"SELECT id,category,price,active FROM rooms ORDER BY id",read=True)
+        stk_paid=sql(c,"SELECT booking_id,COALESCE(SUM(amount),0) AS paid FROM stk_attempts WHERE status='verified' GROUP BY booking_id",read=True)
         counts=sql(c,"SELECT status,COUNT(*) AS qty FROM bookings GROUP BY status",read=True)
         blocked=sql(c,"""SELECT DISTINCT room_id,status FROM bookings WHERE checkin<=? AND checkout>? AND status IN ('pending','confirmed')""",(target,target),read=True)
         stays=sql(c,"""SELECT room_id,id,guest_name,status,pay_status,checkin,checkout FROM bookings WHERE checkin<=? AND checkout>? AND status IN ('pending','confirmed') ORDER BY created_at""",(target,target),read=True)
@@ -264,7 +265,7 @@ def dashboard(request:Request, on_date:str|None=None):
         "on_date":target,
         "today":today.isoformat()
     }
-    return {"bookings":reservations,"inquiries":inquiries,"rooms":rooms,"room_calendar":room_calendar,"stats":stats}
+    return {"bookings":reservations,"inquiries":inquiries,"rooms":rooms,"room_calendar":room_calendar,"payment_balances":{p["booking_id"]:p["paid"] for p in stk_paid},"stats":stats}
 @app.patch("/api/admin/bookings/{bid}")
 def booking_action(bid:str,b:Action,request:Request):
     admin(request);origin(request)
