@@ -237,10 +237,17 @@ def dashboard(request:Request, on_date:str|None=None):
         rooms=sql(c,"SELECT id,category,price,active FROM rooms ORDER BY id",read=True)
         counts=sql(c,"SELECT status,COUNT(*) AS qty FROM bookings GROUP BY status",read=True)
         blocked=sql(c,"""SELECT DISTINCT room_id,status FROM bookings WHERE checkin<=? AND checkout>? AND status IN ('pending','confirmed')""",(target,target),read=True)
+        stays=sql(c,"""SELECT room_id,id,guest_name,status,pay_status,checkin,checkout FROM bookings WHERE checkin<=? AND checkout>? AND status IN ('pending','confirmed') ORDER BY created_at""",(target,target),read=True)
     statuses={row["status"]:row["qty"] for row in counts}
     active={r["id"] for r in rooms if r["active"]}
     reserved={row["room_id"] for row in blocked}
     confirmed_rooms={row["room_id"] for row in blocked if row["status"]=="confirmed"}
+    stays_by_room={item["room_id"]:item for item in stays}
+    room_calendar=[]
+    for room in rooms:
+        stay=stays_by_room.get(room["id"])
+        state="out_of_service" if not room["active"] else ("unbooked" if not stay else ("booked" if stay["status"]=="confirmed" else "reserved_pending"))
+        room_calendar.append({"room_id":room["id"],"category":room["category"],"price":room["price"],"active":bool(room["active"]),"availability":state,"booking_reference":stay["id"] if stay else None,"guest_name":stay["guest_name"] if stay else None,"payment_status":stay["pay_status"] if stay else None,"checkin":stay["checkin"] if stay else None,"checkout":stay["checkout"] if stay else None})
     stats={
         "total_rooms":len(rooms),
         "enabled_rooms":len(active),
@@ -257,7 +264,7 @@ def dashboard(request:Request, on_date:str|None=None):
         "on_date":target,
         "today":today.isoformat()
     }
-    return {"bookings":reservations,"inquiries":inquiries,"rooms":rooms,"stats":stats}
+    return {"bookings":reservations,"inquiries":inquiries,"rooms":rooms,"room_calendar":room_calendar,"stats":stats}
 @app.patch("/api/admin/bookings/{bid}")
 def booking_action(bid:str,b:Action,request:Request):
     admin(request);origin(request)
@@ -276,7 +283,7 @@ def verify(bid:str,b:Verify,request:Request):
         r=rows[0]
         if r["pay_method"]!="mpesa" or r["pay_status"]!="submitted" or not r["transaction_code"] or r["status"] in ("cancelled","rejected"):
             raise HTTPException(409,"No valid submitted payment to review")
-        sql(c,"UPDATE bookings SET pay_status=?,status=CASE WHEN ?='rejected' THEN 'rejected' ELSE status END WHERE id=?",(b.payment_status,b.payment_status,bid))
+        sql(c,"UPDATE bookings SET pay_status=?,status=CASE WHEN ?='rejected' THEN 'rejected' WHEN ?='verified' AND status='pending' THEN 'confirmed' ELSE status END WHERE id=?",(b.payment_status,b.payment_status,b.payment_status,bid))
     return {"payment_status":b.payment_status,"warning":"Verify actual M-Pesa receipt independently"}
 @app.patch("/api/admin/rooms/{rid}/price")
 def price(rid:int,b:Price,request:Request):
