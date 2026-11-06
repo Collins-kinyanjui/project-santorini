@@ -252,3 +252,58 @@ def test_sandbox_stk_uses_test_shortcode_not_real_till(monkeypatch):
     assert captured["payload"]["Amount"]==1500
     assert captured["payload"]["PartyA"]=="254712345678"
     assert captured["payload"]["PartyB"]!="3340030"
+
+
+def test_admin_partial_stk_amount_and_balance(monkeypatch):
+    import stk_routes
+    from datetime import datetime, timedelta, timezone
+    monkeypatch.setattr(stk_routes,"active",lambda:True)
+    monkeypatch.setattr(stk_routes,"PUBLIC_URL","https://staging.example.com")
+    requests=[]
+    def fake_send(phone,amount,ref,callback):
+        requests.append(amount)
+        return {"checkout_id":"TEST-PARTIAL-"+str(len(requests)),"merchant_request_id":"merchant"}
+    monkeypatch.setattr(stk_routes.stk,"send_push",fake_send)
+    monkeypatch.setattr(stk_routes.stk,"query",lambda checkout_id:0)
+    start,end=future(230),future(231)
+    reservation=client.post("/api/bookings",json={
+        "category":"single","guest_name":"Partial Test","email":"partial@example.com",
+        "phone":"0712345678","checkin":start,"checkout":end,"guests":1,
+        "payment_method":"mpesa","requests":""})
+    assert reservation.status_code==201,reservation.text
+    b=reservation.json()
+    client.post("/api/admin/login",json={"password":"test-only-staff-password"})
+    def request_payment(amount):
+        return client.post("/api/admin/stk/request",json={
+            "booking_id":b["booking_id"],"phone":"0712345678",
+            "customer_consented":True,"amount":amount})
+    assert request_payment(0).status_code==422
+    assert request_payment(1501).status_code==422
+    first=request_payment(500)
+    assert first.status_code==200,first.text
+    assert first.json()["amount"]==500
+    assert first.json()["remaining_after_success"]==1000
+    def callback(checkout,amount,receipt):
+        return client.post("/api/mpesa/stk/callback/"+stk_routes.callback_secret(),json={
+            "Body":{"stkCallback":{"CheckoutRequestID":checkout,"ResultCode":0,
+            "CallbackMetadata":{"Item":[{"Name":"Amount","Value":amount},
+            {"Name":"MpesaReceiptNumber","Value":receipt},
+            {"Name":"PhoneNumber","Value":254712345678}]}}})
+    assert callback("TEST-PARTIAL-1",500,"PARTIALA123").status_code==200
+    st=client.post("/api/bookings/status",json={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"]}).json()
+    assert st["payment_status"]=="partial"
+    assert st["status"]=="pending"
+    assert requests==[500]
+    stats=client.get("/api/admin/dashboard").json()
+    assert stats["payment_balances"][b["booking_id"]]==500
+    with app.conn() as db:
+        app.sql(db,"UPDATE stk_attempts SET created_at=? WHERE checkout_id=?",
+            ((datetime.now(timezone.utc)-timedelta(minutes=3)).isoformat(timespec="seconds"),"TEST-PARTIAL-1"))
+    assert request_payment(1100).status_code==422
+    second=request_payment(1000)
+    assert second.status_code==200,second.text
+    assert callback("TEST-PARTIAL-2",1000,"PARTIALB456").status_code==200
+    st=client.post("/api/bookings/status",json={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"]}).json()
+    assert st["payment_status"]=="verified"
+    assert st["status"]=="confirmed"
+    assert requests==[500,1000]
