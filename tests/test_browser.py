@@ -80,6 +80,12 @@ def test_real_browser_guest_booking_and_admin():
             page.locator("#login button[type=submit], #login button.btn").click()
             page.locator("#dashboard").wait_for(state="visible", timeout=10000)
             assert reference in page.locator("#bookings").inner_text()
+            assert page.locator("#stkPanel").count()==1
+            assert page.locator("#stkBooking").count()==1
+            assert page.locator("#stkPhone").count()==1
+            assert page.locator("#stkConsent").count()==1
+            page.get_by_text("STK is not yet enabled",exact=False).wait_for(timeout=10000)
+            assert page.locator("#stkSend").is_disabled()
             assert "TXBROWSER123" in page.locator("#bookings").inner_text()
             assert not errors, errors
 
