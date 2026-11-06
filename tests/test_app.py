@@ -144,3 +144,80 @@ def test_confirmed_payment_marks_room_booked_and_blocks_double_booking():
     b=reservations[1]
     assert client.post("/api/bookings/cancel",json={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"]}).status_code==200
     assert make().status_code==201
+
+
+def test_stk_disabled_until_credentials_configured():
+    import os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"DARAJA_ENABLED":"false"}):
+        c=client.get("/api/mpesa/stk/config")
+        assert c.status_code==200
+        assert c.json()["enabled"] is False
+        assert "DARAJA_CONSUMER_KEY" not in c.text
+        assert client.post("/api/admin/stk/request",json={"booking_id":"invalid","phone":"0712345678","customer_consented":False}).status_code in (401,422)
+
+
+def test_admin_stk_push_verified_callback_and_replay(monkeypatch):
+    import stk_routes
+    monkeypatch.setattr(stk_routes,"active",lambda:True)
+    monkeypatch.setattr(stk_routes,"PUBLIC_URL","https://new-santorini-suites.onrender.com")
+    sent=[]
+    def fake_send(phone,amount,ref,callback_url):
+        sent.append((phone,amount,ref,callback_url))
+        return {"checkout_id":"ws_CO_TEST_SUCCESS_2026","merchant_request_id":"TEST-MERCHANT"}
+    monkeypatch.setattr(stk_routes.stk,"send_push",fake_send)
+    monkeypatch.setattr(stk_routes.stk,"query",lambda checkout_id:0)
+    checkin,checkout=future(190),future(191)
+    reservation=client.post("/api/bookings",json={
+        "category":"single","guest_name":"STK Test Guest","email":"stk-test@example.com",
+        "phone":"0712345678","checkin":checkin,"checkout":checkout,"guests":1,
+        "payment_method":"arrival","requests":""})
+    assert reservation.status_code==201,reservation.text
+    booking=reservation.json()
+    client.post("/api/admin/login",json={"password":"test-only-staff-password"})
+    url="/api/admin/stk/request"
+    denied=client.post(url,json={"booking_id":booking["booking_id"],"phone":"0712345678","customer_consented":False})
+    assert denied.status_code==422
+    sent_request=client.post(url,json={"booking_id":booking["booking_id"],"phone":"0712345678","customer_consented":True})
+    assert sent_request.status_code==200,sent_request.text
+    assert sent_request.json()["status"]=="prompt_sent"
+    assert sent[0][0]=="254712345678"
+    assert sent[0][1]==1500
+    assert sent[0][2]==booking["booking_id"]
+    assert sent[0][3].startswith("https://")
+    duplicate=client.post(url,json={"booking_id":booking["booking_id"],"phone":"0712345678","customer_consented":True})
+    assert duplicate.status_code==429
+    callback={"Body":{"stkCallback":{"MerchantRequestID":"TEST-MERCHANT","CheckoutRequestID":"ws_CO_TEST_SUCCESS_2026","ResultCode":0,"ResultDesc":"Successful",
+        "CallbackMetadata":{"Item":[{"Name":"Amount","Value":1500},{"Name":"MpesaReceiptNumber","Value":"STKTESTOK2026"},{"Name":"PhoneNumber","Value":254712345678}]}}}}
+    result=client.post("/api/mpesa/stk/callback/"+stk_routes.callback_secret(),json=callback)
+    assert result.status_code==200,result.text
+    reattempt=client.post("/api/mpesa/stk/callback/"+stk_routes.callback_secret(),json=callback)
+    assert reattempt.status_code==200
+    state=client.post("/api/bookings/status",json={"booking_id":booking["booking_id"],"cancel_code":booking["cancel_code"]})
+    assert state.status_code==200
+    assert state.json()["status"]=="confirmed"
+    assert state.json()["payment_status"]=="verified"
+    room=next(r for r in client.get("/api/admin/dashboard?on_date="+checkin).json()["room_calendar"] if r["booking_reference"]==booking["booking_id"])
+    assert room["availability"]=="booked"
+    assert client.post("/api/bookings/stk/request",json={"booking_id":booking["booking_id"],"cancel_code":booking["cancel_code"],"phone":"0712345678"}).status_code==409
+    assert client.post("/api/mpesa/stk/callback/wrong-secret",json=callback).status_code==404
+
+
+def test_callback_amount_mismatch_does_not_verify(monkeypatch):
+    import stk_routes
+    monkeypatch.setattr(stk_routes,"active",lambda:True)
+    monkeypatch.setattr(stk_routes,"PUBLIC_URL","https://new-santorini-suites.onrender.com")
+    monkeypatch.setattr(stk_routes.stk,"send_push",lambda *args:{"checkout_id":"ws_CO_TEST_MISMATCH_2026","merchant_request_id":"TEST"})
+    monkeypatch.setattr(stk_routes.stk,"query",lambda *args:0)
+    start,end=future(200),future(201)
+    b=client.post("/api/bookings",json={"category":"double","guest_name":"Amount Test","email":"amount-test@example.com",
+        "phone":"0712345678","checkin":start,"checkout":end,"guests":2,"payment_method":"mpesa","requests":""}).json()
+    req=client.post("/api/bookings/stk/request",json={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"],"phone":"0712345678"})
+    assert req.status_code==200,req.text
+    callback={"Body":{"stkCallback":{"CheckoutRequestID":"ws_CO_TEST_MISMATCH_2026","ResultCode":0,
+        "CallbackMetadata":{"Item":[{"Name":"Amount","Value":1},{"Name":"MpesaReceiptNumber","Value":"BAD_AMOUNT_123"},{"Name":"PhoneNumber","Value":254712345678}]}}}}
+    assert client.post("/api/mpesa/stk/callback/"+stk_routes.callback_secret(),json=callback).status_code==200
+    state=client.post("/api/bookings/status",json={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"]}).json()
+    assert state["payment_status"]=="unpaid"
+    attempt=client.post("/api/bookings/stk/status",json={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"]}).json()
+    assert attempt["stk_status"]=="mismatch"
