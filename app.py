@@ -118,7 +118,7 @@ def assets(filename:str):
 @app.get("/api/health")
 def health():return {"ok":True,"rooms":20,"manual_mpesa":True}
 @app.get("/api/mpesa/instructions")
-def mpesa():return {"recipient":"Collins Kinyanjui Thuo","phone":"+254740686453","automatic_verification":False}
+def mpesa():return {"payment_type":"buy_goods","recipient":"Alex Waragu Kuriah","till_number":"3340030","automatic_verification":False}
 @app.get("/api/rooms")
 def rooms():
     with conn() as c:
