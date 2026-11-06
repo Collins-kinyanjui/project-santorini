@@ -221,3 +221,34 @@ def test_callback_amount_mismatch_does_not_verify(monkeypatch):
     assert state["payment_status"]=="unpaid"
     attempt=client.post("/api/bookings/stk/status",json={"booking_id":b["booking_id"],"cancel_code":b["cancel_code"]}).json()
     assert attempt["stk_status"]=="mismatch"
+
+def test_sandbox_stk_uses_test_shortcode_not_real_till(monkeypatch):
+    import os, stk, base64
+    from unittest.mock import patch
+    captured={}
+    class MockResponse:
+        def raise_for_status(self):pass
+        def json(self):return {"ResponseCode":"0","CheckoutRequestID":"sandbox-test-checkout","MerchantRequestID":"sandbox-test-merchant"}
+    class FakeClient:
+        def __init__(self, **kwargs):pass
+        def __enter__(self):return self
+        def __exit__(self, *args):pass
+        def post(self,url,headers=None,json=None):
+            captured.update({"url":url,"headers":headers,"payload":json})
+            return MockResponse()
+    with patch.dict(os.environ,{
+        "DARAJA_CONSUMER_KEY":"sandboxkey","DARAJA_CONSUMER_SECRET":"sandboxsecret",
+        "DARAJA_PASSKEY":"sandboxpass","DARAJA_STORE_SHORTCODE":"174379",
+        "DARAJA_ENV":"sandbox"
+    }):
+        monkeypatch.setattr(stk.httpx,"Client",FakeClient)
+        monkeypatch.setattr(stk,"token",lambda:"fake-test-token")
+        result=stk.send_push("0712345678",1500,"NS-ABCDEF12","https://staging.example.com/callback")
+    assert result["checkout_id"]=="sandbox-test-checkout"
+    assert captured["url"].startswith("https://sandbox.safaricom.co.ke/")
+    assert captured["payload"]["BusinessShortCode"]=="174379"
+    assert captured["payload"]["PartyB"]=="174379"
+    assert captured["payload"]["TransactionType"]=="CustomerPayBillOnline"
+    assert captured["payload"]["Amount"]==1500
+    assert captured["payload"]["PartyA"]=="254712345678"
+    assert captured["payload"]["PartyB"]!="3340030"
