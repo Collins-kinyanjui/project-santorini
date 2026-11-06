@@ -62,7 +62,7 @@ class StaffPush(BaseModel):
     booking_id: str
     phone: str
     customer_consented: bool
-    amount: int
+    amount: int | None = None
 
 class GuestStatus(BaseModel):
     booking_id: str
@@ -192,8 +192,12 @@ def guest_payment_status(b:GuestStatus,request:Request):
     attempt=read_attempt(b.booking_id)
     if attempt and active() and attempt["status"] not in ("verified","failed","mismatch"):
         attempt=reconcile(attempt)
-    return {"booking_id":b.booking_id,"payment_status":book["pay_status"] if not attempt or attempt["status"]!="verified" else "verified",
-            "stk_status":attempt["status"] if attempt else "not_requested"}
+    with conn() as db:
+        latest=sql(db,"SELECT pay_status,total FROM bookings WHERE id=?",(b.booking_id,),read=True)[0]
+        paid=sql(db,"SELECT COALESCE(SUM(amount),0) AS paid FROM stk_attempts WHERE booking_id=? AND status='verified'",(b.booking_id,),read=True)[0]["paid"]
+    return {"booking_id":b.booking_id,"payment_status":latest["pay_status"],
+            "stk_status":attempt["status"] if attempt else "not_requested",
+            "paid_amount":paid,"outstanding_amount":max(0,latest["total"]-paid)}
 
 def booking_for_status(bid,code):
     with conn() as db:
@@ -208,7 +212,10 @@ def staff_reconcile(b:StaffStatus,request:Request):
     attempt=read_attempt(b.booking_id)
     if not attempt:raise HTTPException(404,"No STK attempt for that booking.")
     attempt=reconcile(attempt) if active() else attempt
-    return {"booking_id":b.booking_id,"stk_status":attempt["status"]}
+    with conn() as db:
+        latest=sql(db,"SELECT total FROM bookings WHERE id=?",(b.booking_id,),read=True)[0]
+        paid=sql(db,"SELECT COALESCE(SUM(amount),0) AS paid FROM stk_attempts WHERE booking_id=? AND status='verified'",(b.booking_id,),read=True)[0]["paid"]
+    return {"booking_id":b.booking_id,"stk_status":attempt["status"],"result_code":attempt["callback_code"],"paid_amount":paid,"outstanding_amount":max(0,latest["total"]-paid)}
 
 @router.post("/api/mpesa/stk/callback/{key}")
 async def safaricom_callback(key:str,request:Request):
